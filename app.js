@@ -675,54 +675,124 @@ function updateAnalysisPanel() {
 /* ============================================================
    CHROME EXTENSION HELPERS
    ============================================================ */
+const STORAGE_KEY = 'studyFocusTimerState';
+const STORAGE_KEYS = [
+  'sessions',
+  'totalMinsAll',
+  'codeMinsAll',
+  'completedCount',
+  'bestStreak',
+  'studentProfile'
+];
+
 function bgMsg(payload) {
   if (typeof chrome !== 'undefined' && chrome.runtime) {
-    chrome.runtime.sendMessage(payload).catch(() => {});
+    const response = chrome.runtime.sendMessage(payload);
+    if (response && typeof response.catch === 'function') response.catch(() => {});
   }
 }
 
+function buildStorageState() {
+  return {
+    sessions,
+    totalMinsAll,
+    codeMinsAll,
+    completedCount,
+    bestStreak,
+    studentProfile
+  };
+}
+
+function hasChromeStorage() {
+  return typeof chrome !== 'undefined'
+    && chrome.storage
+    && chrome.storage.local;
+}
+
 function saveToStorage() {
-  if (typeof chrome !== 'undefined' && chrome.storage) {
-    chrome.storage.local.set({
-      sessions, totalMinsAll, codeMinsAll,
-      completedCount, bestStreak, studentProfile
+  const data = buildStorageState();
+
+  if (hasChromeStorage()) {
+    chrome.storage.local.set(data, () => {
+      if (chrome.runtime.lastError) {
+        console.warn('StudyFocus storage save failed:', chrome.runtime.lastError.message);
+      }
     });
+    return;
+  }
+
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+  } catch (err) {
+    console.warn('StudyFocus localStorage save failed:', err);
   }
 }
 
 function loadFromStorage() {
-  if (typeof chrome !== 'undefined' && chrome.storage) {
-    chrome.storage.local.get(
-      ['sessions', 'totalMinsAll', 'codeMinsAll', 'completedCount', 'bestStreak', 'studentProfile'],
-      (data) => {
-        if (Array.isArray(data.sessions)) {
-          sessions = data.sessions.map(s => ({
-            ...s, time: s.time ? new Date(s.time).getTime() : Date.now()
-          }));
-          // Recount completed from stored data
-          completedCount = sessions.filter(s => s.completed).length;
-        }
-        if (data.totalMinsAll)  totalMinsAll  = data.totalMinsAll;
-        if (data.codeMinsAll)   codeMinsAll   = data.codeMinsAll;
-        if (data.completedCount !== undefined) completedCount = data.completedCount;
-        if (data.bestStreak)    bestStreak    = data.bestStreak;
-        streak = sessions.length; // approximate
-        if (data.studentProfile) {
-          studentProfile = {
-            ...studentProfile,
-            ...data.studentProfile,
-            subjects: Array.isArray(data.studentProfile.subjects) ? data.studentProfile.subjects : []
-          };
-        }
-        updateStats();
-        renderLog();
-        renderProfile();
-        updateAnalysisPanel();
-        updateHeaderStatus();
-        updateDailyProgress();
+  if (hasChromeStorage()) {
+    chrome.storage.local.get(STORAGE_KEYS, (data) => {
+      if (chrome.runtime.lastError) {
+        console.warn('StudyFocus storage load failed:', chrome.runtime.lastError.message);
+        loadFromLocalStorage();
+        return;
       }
-    );
+      applyStoredState(data || {});
+    });
+    return;
   }
+
+  loadFromLocalStorage();
+}
+
+function loadFromLocalStorage() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    applyStoredState(raw ? JSON.parse(raw) : {});
+  } catch (err) {
+    console.warn('StudyFocus localStorage load failed:', err);
+    applyStoredState({});
+  }
+}
+
+function applyStoredState(data) {
+  if (Array.isArray(data.sessions)) {
+    sessions = data.sessions.map(s => ({
+      ...s,
+      mins: Number(s.mins) || 0,
+      score: Number(s.score) || 0,
+      time: s.time ? new Date(s.time).getTime() : Date.now()
+    }));
+  }
+
+  totalMinsAll = Number.isFinite(Number(data.totalMinsAll))
+    ? Number(data.totalMinsAll)
+    : sessions.reduce((sum, s) => sum + (s.mins || 0), 0);
+
+  codeMinsAll = Number.isFinite(Number(data.codeMinsAll))
+    ? Number(data.codeMinsAll)
+    : sessions.filter(s => s.coding).reduce((sum, s) => sum + (s.mins || 0), 0);
+
+  completedCount = Number.isFinite(Number(data.completedCount))
+    ? Number(data.completedCount)
+    : sessions.filter(s => s.completed).length;
+
+  bestStreak = Number.isFinite(Number(data.bestStreak)) ? Number(data.bestStreak) : sessions.length;
+  streak = sessions.length; // approximate after a popup reload
+
+  if (data.studentProfile) {
+    studentProfile = {
+      ...studentProfile,
+      ...data.studentProfile,
+      subjects: Array.isArray(data.studentProfile.subjects) ? data.studentProfile.subjects : []
+    };
+  }
+
+  updateStats();
+  renderLog();
+  renderProfile();
+  updateAnalysisPanel();
+  updateHeaderStatus();
+  updateDailyProgress();
 }
 
 /* Badge tick every 60s */
